@@ -1,0 +1,19 @@
+[package]
+name = "link-keeper"
+version = "0.1.0"
+authors = ["Jesper Håkansson <jesper@jesperh.se>"]
+edition = "2018"
+
+[dependencies]
+clap = "2.32.0"
+chrono = "0.4.6"
+tui = "0.4.0"
+termion = "1.5.1"
+dialoguer = "0.3.0"
+dirs = "1.0.5"
+toml = "0.4.10"
+graphql_client = "0.6.1"
+
+[dependencies.serde]
+version = "1.0.89"
+features = ["derive"]
