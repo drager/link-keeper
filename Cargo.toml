@@ -13,6 +13,7 @@ dialoguer = "0.3.0"
 dirs = "1.0.5"
 toml = "0.4.10"
 graphql_client = "0.6.1"
+serde_json = "1.0.39"
 
 [dependencies.serde]
 version = "1.0.89"

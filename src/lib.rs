@@ -1,54 +1,38 @@
-use chrono;
+use crate::backend::{AccessToken, AvailableBackend, Backend, Github, GoogleDrive};
 use dirs::config_dir;
-use graphql_client::{GraphQLQuery, Response};
-use serde::Serialize;
-use std::fmt;
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+
+pub mod backend;
 
 pub struct MyQuery;
 
-#[derive(Debug, PartialEq, Serialize)]
-pub enum AvailableBackend {
-    Github(GithubConfig),
-    GoogleDrive(GoogleConfig),
-}
-
-impl fmt::Display for AvailableBackend {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        match self {
-            AvailableBackend::Github(_) => fmt.write_fmt(format_args!("Github")),
-            AvailableBackend::GoogleDrive(_) => fmt.write_fmt(format_args!("Google drive")),
-        }
-    }
-}
-
-impl From<usize> for AvailableBackend {
-    fn from(num: usize) -> Self {
-        match num {
-            0 => AvailableBackend::Github(GithubConfig::default()),
-            1 => AvailableBackend::GoogleDrive(GoogleConfig::default()),
-            _ => panic!("Unknown"),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Settings {
     config_path: PathBuf,
     config_file_name: String,
 }
 
 #[derive(Debug, Serialize)]
-pub struct LinkKeeper {
+pub struct LinkKeeper<'a> {
     activated_backends: Vec<AvailableBackend>,
     settings: Settings,
+    store: Store<'a>,
 }
 
-impl LinkKeeper {
+impl<'a> LinkKeeper<'a> {
     pub fn new() -> Self {
         let config_path = config_dir().expect("Failed to retrieve configuration directory");
+
+        // TODO: Read from toml config before going further.
+        let store = Store::new(
+            env::current_dir().unwrap(),
+            "link_keeper.json",
+            &Format::Json,
+        );
 
         let link_keeper = LinkKeeper {
             activated_backends: vec![],
@@ -56,6 +40,7 @@ impl LinkKeeper {
                 config_path: config_path.join("link-keeper"),
                 config_file_name: "link-keeper.toml".to_owned(),
             },
+            store,
         };
 
         let full_config_path = link_keeper.full_config_path();
@@ -75,6 +60,48 @@ impl LinkKeeper {
         }
 
         link_keeper
+    }
+
+    // TODO: Able to turn on warning about already stored link
+    fn warn_about_same() {}
+
+    // TODO: Should probably use failure and return Result<(), OwnError> instead
+    pub fn add(&self, link: &str, category: Option<&str>) -> Result<(), io::Error> {
+        let new_link = Link { link, category };
+
+        self.store.create_file()?;
+
+        let formatted_data = self.store.format_data(&vec![new_link])?;
+
+        let formatted_data = if self.store.file_is_empty()? {
+            formatted_data
+        } else {
+            let old_contents = self.store.read_data_from_file()?;
+            let mut old_contents_as_orginal = self.store.to_orginal_format(&old_contents)?;
+
+            old_contents_as_orginal.append(&mut self.store.to_orginal_format(&formatted_data)?);
+
+            self.store.format_data(&old_contents_as_orginal)?
+        };
+
+        self.store.write_to_file(formatted_data.as_bytes())?;
+
+        Ok(())
+    }
+
+    pub fn get_available_backends(&self) -> Vec<Box<Backend>> {
+        vec![Box::new(Github), Box::new(GoogleDrive)]
+    }
+
+    pub fn init_backend(
+        &mut self,
+        backend: &AvailableBackend,
+        access_token: AccessToken,
+    ) -> Result<(), ()> {
+        match backend {
+            AvailableBackend::Github(_) => Github.add(self, access_token),
+            AvailableBackend::GoogleDrive(_) => GoogleDrive.add(self, access_token),
+        }
     }
 
     /// Convience function to get the full path to the configuration file
@@ -99,21 +126,6 @@ impl LinkKeeper {
         )?;
 
         Ok(())
-    }
-
-    pub fn get_available_backends(&self) -> Vec<Box<Backend>> {
-        vec![Box::new(Github), Box::new(GoogleDrive)]
-    }
-
-    pub fn init_backend(
-        &mut self,
-        backend: &AvailableBackend,
-        access_token: AccessToken,
-    ) -> Result<(), ()> {
-        match backend {
-            AvailableBackend::Github(_) => Github.add(self, access_token),
-            AvailableBackend::GoogleDrive(_) => GoogleDrive.add(self, access_token),
-        }
     }
 
     fn add_backend(&mut self, backend: AvailableBackend) {
@@ -165,91 +177,97 @@ impl LinkKeeper {
     }
 }
 
-#[derive(Debug)]
-pub struct Data {
-    url: String,
-    name: String,
-    date_time: chrono::DateTime<chrono::offset::Utc>,
+#[derive(Debug, Serialize)]
+enum Format {
+    Json,
+    Markdown,
 }
 
-#[derive(Debug)]
-struct Github;
-
-impl fmt::Display for Github {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        fmt.write_fmt(format_args!("Github"))
-    }
+#[derive(Debug, Serialize)]
+struct Store<'a> {
+    path: PathBuf,
+    file_name: &'a str,
+    format: &'a Format,
 }
 
-#[derive(Debug, Serialize, PartialEq, Default)]
-pub struct GithubConfig {
-    access_token: AccessToken,
+#[derive(Debug, Serialize, Deserialize)]
+struct Link<'a> {
+    link: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category: Option<&'a str>,
 }
 
-#[derive(Debug, Default, Serialize, PartialEq)]
-pub struct AccessToken(pub String);
-
-pub trait Backend: fmt::Debug + fmt::Display {
-    fn add(&self, link_keeper: &mut LinkKeeper, access_token: AccessToken) -> Result<(), ()>;
-    fn sign_in(&self, access_token: &AccessToken) -> Result<(), ()>;
-    fn sign_out(&self, access_token: &AccessToken) -> Result<(), ()>;
-    //fn send(&self, data: &Data) -> Result<Response, ()>;
-    //fn get();
-    //fn get_all();
-}
-
-impl Backend for Github {
-    fn add(&self, link_keeper: &mut LinkKeeper, access_token: AccessToken) -> Result<(), ()> {
-        self.sign_in(&access_token).map(|_user| {
-            link_keeper.add_backend(AvailableBackend::Github(GithubConfig { access_token }))
-        })
+impl<'a> Store<'a> {
+    fn new(path: PathBuf, file_name: &'a str, format: &'a Format) -> Self {
+        Store {
+            path,
+            file_name,
+            format,
+        }
     }
 
-    fn sign_in(&self, access_token: &AccessToken) -> Result<(), ()> {
-        dbg!(access_token);
+    fn format_data(&self, links: &Vec<Link>) -> Result<String, serde_json::error::Error> {
+        let formatted = match self.format {
+            Format::Json => serde_json::to_string(links)?,
+            Format::Markdown => "".to_owned(),
+        };
+
+        Ok(formatted)
+    }
+
+    fn to_orginal_format(&self, contents: &'a str) -> Result<Vec<Link>, serde_json::error::Error> {
+        let formatted = match self.format {
+            Format::Json => serde_json::from_str::<_>(contents)?,
+            Format::Markdown => unimplemented!(),
+        };
+
+        Ok(formatted)
+    }
+
+    fn create_file(&self) -> Result<(), io::Error> {
+        let full_path = self.joined();
+
+        if !full_path.exists() {
+            dbg!("Creating file...");
+            fs::File::create(full_path)?;
+        }
+
         Ok(())
     }
 
-    fn sign_out(&self, access_token: &AccessToken) -> Result<(), ()> {
+    fn joined(&self) -> PathBuf {
+        self.path.join(&self.file_name)
+    }
+
+    fn read_data_from_file(&self) -> Result<String, io::Error> {
+        let full_path = self.joined();
+        let mut file = OpenOptions::new().read(true).open(full_path)?;
+
+        let mut buffer = String::new();
+        file.read_to_string(&mut buffer)?;
+
+        Ok(buffer)
+    }
+
+    fn write_to_file(&self, contents: &[u8]) -> Result<(), io::Error> {
+        let full_path = self.joined();
+
+        // TODO: Improvement, use .append(true) instead of write.
+        let mut file = OpenOptions::new().write(true).open(full_path)?;
+
+        file.write_all(contents)?;
+
         Ok(())
     }
 
-    /*fn send(&self, data: &Data) -> Result<Response, ()> {*/
-    //Ok(Response)
-    /*}*/
-}
+    fn file_is_empty(&self) -> Result<bool, io::Error> {
+        let full_path = self.joined();
 
-#[derive(Debug)]
-struct GoogleDrive;
+        let mut file = File::open(full_path)?;
 
-impl fmt::Display for GoogleDrive {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        fmt.write_fmt(format_args!("Google drive"))
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        Ok(contents.is_empty())
     }
-}
-
-#[derive(Debug, Serialize, PartialEq, Default)]
-pub struct GoogleConfig {
-    access_token: AccessToken,
-}
-
-impl Backend for GoogleDrive {
-    fn add(&self, link_keeper: &mut LinkKeeper, access_token: AccessToken) -> Result<(), ()> {
-        self.sign_in(&access_token).map(|_user| {
-            link_keeper.add_backend(AvailableBackend::GoogleDrive(GoogleConfig { access_token }))
-        })
-    }
-
-    fn sign_in(&self, access_token: &AccessToken) -> Result<(), ()> {
-        dbg!(access_token);
-        Ok(())
-    }
-
-    fn sign_out(&self, access_token: &AccessToken) -> Result<(), ()> {
-        Ok(())
-    }
-
-    /*fn send(&self, data: &Data) -> Result<Response, ()> {*/
-    //Ok(Response)
-    /*}*/
 }

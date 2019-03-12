@@ -1,13 +1,17 @@
 use clap::{App, Arg, SubCommand};
-use dialoguer::{Confirmation, Input, PasswordInput, Select};
-use link_keeper::{AccessToken, AvailableBackend, LinkKeeper};
+use dialoguer::{PasswordInput, Select};
+use link_keeper::{
+    backend::{AccessToken, AvailableBackend},
+    LinkKeeper,
+};
 use std::io;
 
 const PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const PKG_NAME: Option<&'static str> = option_env!("CARGO_PKG_NAME");
 
 fn main() -> Result<(), io::Error> {
-    let store_command = "store";
+    let add_command = "add";
+    let add_link_command = "link";
     let backend_command = "backend";
     let backend_add_command = "add";
 
@@ -25,7 +29,15 @@ fn main() -> Result<(), io::Error> {
                         .about("Add a backend to store links at"),
                 ),
         )
-        .subcommand(SubCommand::with_name(store_command).about("Store a link at the given backend"))
+        .subcommand(
+            SubCommand::with_name(add_command)
+                .arg(
+                    Arg::with_name(add_link_command)
+                        .help("The link to be stored. For example: https://github.com/drager/link-keeper")
+                        .required(true),
+                )
+                .about("Store a link at the given backend"),
+        )
         .get_matches();
 
     if let Some(backend_matches) = matches.subcommand_matches(backend_command) {
@@ -53,5 +65,13 @@ fn main() -> Result<(), io::Error> {
             }
         }
     }
+
+    let _ = matches
+        .subcommand_matches(add_command)
+        .and_then(|add_matches| {
+            add_matches.value_of(add_link_command).map(|link_value| {
+                keeper.add(link_value, None).unwrap();
+            })
+        });
     Ok(())
 }
