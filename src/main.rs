@@ -1,5 +1,6 @@
 use clap::{App, Arg, SubCommand};
-use dialoguer::{PasswordInput, Select};
+use console::style;
+use dialoguer::{Confirmation, PasswordInput, Select};
 use link_keeper::{
     backend::{AccessToken, AvailableBackend},
     LinkKeeper,
@@ -69,8 +70,24 @@ fn main() -> Result<(), io::Error> {
     let _ = matches
         .subcommand_matches(add_command)
         .and_then(|add_matches| {
-            add_matches.value_of(add_link_command).map(|link_value| {
-                keeper.add(link_value, None).unwrap();
+            add_matches.value_of(add_link_command).map(|new_link| {
+                // TODO: Real error handling
+                if keeper.link_already_exists(new_link).unwrap() {
+                    eprintln!(
+                        "{}{}",
+                        style("warning").yellow().bold(),
+                        style(format!(": Link already exists\n")).bold(),
+                    );
+                    if Confirmation::new()
+                        .with_text("Do you want to add it anyway?")
+                        .interact()
+                        .unwrap()
+                    {
+                        keeper.add(new_link, None).unwrap();
+                    }
+                } else {
+                    keeper.add(new_link, None).unwrap();
+                }
             })
         });
     Ok(())

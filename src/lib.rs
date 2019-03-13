@@ -62,11 +62,18 @@ impl<'a> LinkKeeper<'a> {
         link_keeper
     }
 
-    // TODO: Able to turn on warning about already stored link
-    fn warn_about_same() {}
+    pub fn link_already_exists(&self, link: &str) -> Result<bool, io::Error> {
+        if self.store.file_exists() {
+            let old_contents = self.store.read_data_from_file()?;
+
+            Ok(self.contains_link(&link, &old_contents))
+        } else {
+            Ok(false)
+        }
+    }
 
     // TODO: Should probably use failure and return Result<(), OwnError> instead
-    pub fn add(&self, link: &str, category: Option<&str>) -> Result<(), io::Error> {
+    pub fn add(&self, link: &'a str, category: Option<&'a str>) -> Result<(), io::Error> {
         let new_link = Link { link, category };
 
         self.store.create_file()?;
@@ -77,6 +84,7 @@ impl<'a> LinkKeeper<'a> {
             formatted_data
         } else {
             let old_contents = self.store.read_data_from_file()?;
+
             let mut old_contents_as_orginal = self.store.to_orginal_format(&old_contents)?;
 
             old_contents_as_orginal.append(&mut self.store.to_orginal_format(&formatted_data)?);
@@ -102,6 +110,10 @@ impl<'a> LinkKeeper<'a> {
             AvailableBackend::Github(_) => Github.add(self, access_token),
             AvailableBackend::GoogleDrive(_) => GoogleDrive.add(self, access_token),
         }
+    }
+
+    fn contains_link(&self, new_link: &str, old_contents: &str) -> bool {
+        old_contents.contains(new_link)
     }
 
     /// Convience function to get the full path to the configuration file
@@ -190,7 +202,7 @@ struct Store<'a> {
     format: &'a Format,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Link<'a> {
     link: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,7 +218,7 @@ impl<'a> Store<'a> {
         }
     }
 
-    fn format_data(&self, links: &Vec<Link>) -> Result<String, serde_json::error::Error> {
+    fn format_data(&self, links: &'a Vec<Link>) -> Result<String, serde_json::error::Error> {
         let formatted = match self.format {
             Format::Json => serde_json::to_string(links)?,
             Format::Markdown => "".to_owned(),
@@ -224,12 +236,17 @@ impl<'a> Store<'a> {
         Ok(formatted)
     }
 
-    fn create_file(&self) -> Result<(), io::Error> {
+    fn file_exists(&self) -> bool {
         let full_path = self.joined();
 
-        if !full_path.exists() {
+        full_path.exists()
+    }
+
+    fn create_file(&self) -> Result<(), io::Error> {
+        if !self.file_exists() {
+            // TODO: Real logging
             dbg!("Creating file...");
-            fs::File::create(full_path)?;
+            fs::File::create(self.joined())?;
         }
 
         Ok(())
