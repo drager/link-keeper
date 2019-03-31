@@ -1,4 +1,4 @@
-use crate::backend::{AccessToken, AvailableBackend, Backend, Github, GoogleDrive};
+use crate::backend::{AvailableBackend, Backend, Git, GitConfig, Github, GithubConfig};
 use dirs::config_dir;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -16,16 +16,67 @@ struct Settings {
     config_file_name: String,
 }
 
-#[derive(Debug, Serialize)]
+impl Default for Settings {
+    fn default() -> Self {
+        let config_path = config_dir().expect("Failed to retrieve configuration directory");
+
+        Self {
+            config_path: config_path.join("link-keeper"),
+            config_file_name: "link-keeper.toml".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct LinkKeeper<'a> {
-    activated_backends: Vec<AvailableBackend>,
+    activated_backends: Vec<Box<dyn Backend>>,
     settings: Settings,
     store: Store<'a>,
 }
 
+fn get_old_backends(
+    old_toml_config: &Result<toml::Value, failure::Error>,
+) -> Option<Vec<Box<dyn Backend>>> {
+    match old_toml_config {
+        Ok(ref config) => config.as_table().and_then(|table| {
+            table
+                .get("backends")
+                .and_then(|backends| backends.as_table())
+                .map(|backends| {
+                    backends
+                        .into_iter()
+                        .filter_map(|(key, value)| match AvailableBackend::from(key.as_str()) {
+                            AvailableBackend::Git => Some(Box::new(Git {
+                                config: value.clone().try_into::<GitConfig>().unwrap(),
+                            })
+                                as Box<dyn Backend>),
+                            AvailableBackend::Github => Some(Box::new(Github {
+                                config: value.clone().try_into::<GithubConfig>().unwrap(),
+                            })
+                                as Box<dyn Backend>),
+
+                            _ => None,
+                        })
+                        .collect()
+                })
+        }),
+        Err(_) => None,
+    }
+}
+
 impl<'a> LinkKeeper<'a> {
     pub fn new() -> Self {
-        let config_path = config_dir().expect("Failed to retrieve configuration directory");
+        let default_settings = Settings::default();
+
+        let old_toml_config = Self::get_old_toml_config(
+            &default_settings
+                .config_path
+                .join(&default_settings.config_file_name),
+        );
+
+        let old_backends = get_old_backends(&old_toml_config);
+
+        dbg!(&old_backends);
 
         // TODO: Read from toml config before going further.
         let store = Store::new(
@@ -35,11 +86,11 @@ impl<'a> LinkKeeper<'a> {
         );
 
         let link_keeper = LinkKeeper {
-            activated_backends: vec![],
-            settings: Settings {
-                config_path: config_path.join("link-keeper"),
-                config_file_name: "link-keeper.toml".to_owned(),
+            activated_backends: match old_backends {
+                Some(old_backends) => old_backends,
+                None => vec![],
             },
+            settings: default_settings,
             store,
         };
 
@@ -76,6 +127,28 @@ impl<'a> LinkKeeper<'a> {
     pub fn add(&self, link: &'a str, category: Option<&'a str>) -> Result<(), io::Error> {
         let new_link = Link { link, category };
 
+        println!("Adding link to backends...");
+
+        dbg!(&self.activated_backends);
+
+        // TODO: Fail on every?
+        // Option to abort on fail for any?
+        let errors = self
+            .activated_backends
+            .iter()
+            .map(|backend| backend.add_link(&new_link))
+            .filter(|result| result.is_err())
+            .collect::<Vec<Result<(), ()>>>();
+
+        dbg!(errors);
+
+        // Always add to raw!
+        self.add_to_raw(new_link)?;
+
+        Ok(())
+    }
+
+    fn add_to_raw(&self, new_link: Link) -> Result<(), io::Error> {
         self.store.create_file()?;
 
         let formatted_data = self.store.format_data(&vec![new_link])?;
@@ -97,19 +170,28 @@ impl<'a> LinkKeeper<'a> {
         Ok(())
     }
 
-    pub fn get_available_backends(&self) -> Vec<Box<Backend>> {
-        vec![Box::new(Github), Box::new(GoogleDrive)]
+    pub fn get_available_backends(&self) -> Vec<String> {
+        vec![
+            "Git".to_owned(),
+            "Github".to_owned(),
+            "GoogleDrive".to_owned(),
+        ]
     }
 
-    pub fn init_backend(
-        &mut self,
-        backend: &AvailableBackend,
-        access_token: AccessToken,
-    ) -> Result<(), ()> {
-        match backend {
-            AvailableBackend::Github(_) => Github.add(self, access_token),
-            AvailableBackend::GoogleDrive(_) => GoogleDrive.add(self, access_token),
-        }
+    /// Get all the activated backends
+    pub fn get_activated_backends(&self) -> Vec<&Box<dyn Backend>> {
+        self.activated_backends
+            .iter()
+            .collect::<Vec<&Box<dyn Backend>>>()
+    }
+
+    pub fn add_backend(&mut self, backend: Box<dyn Backend>) -> Result<(), failure::Error> {
+        self.activated_backends.push(backend);
+
+        self.create_toml_string()
+            .map(|toml_string| self.write_to_config(&toml_string))??;
+
+        Ok(())
     }
 
     fn contains_link(&self, new_link: &str, old_contents: &str) -> bool {
@@ -140,37 +222,32 @@ impl<'a> LinkKeeper<'a> {
         Ok(())
     }
 
-    fn add_backend(&mut self, backend: AvailableBackend) {
-        if !self.activated_backends.contains(&backend) {
-            self.activated_backends.push(backend);
-            // TODO: Should use `?` here and use `failure` for errors.
-            self.create_toml_string()
-                .map(|toml_string| self.write_to_config(&toml_string));
-        }
+    fn get_old_toml_config(path: &Path) -> Result<toml::Value, failure::Error> {
+        let mut file = File::open(path)?;
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(toml::from_str::<toml::Value>(&contents)?)
     }
 
     fn create_toml_string(&self) -> Result<String, toml::ser::Error> {
-        let merge_tomls = |config: Result<String, toml::ser::Error>, backend: &AvailableBackend| {
+        let merge_tomls = |config: Result<String, toml::ser::Error>, backend: &Box<dyn Backend>| {
             config
                 .map(|toml_string| {
                     format!(
-                        "\n[{}]\n{}",
+                        "\n[backends.{}]\n{}",
                         backend.to_string().to_lowercase().replace(" ", "_"),
                         toml_string
                     )
                 })
                 .unwrap_or_else(|_| "".to_owned())
         };
+        dbg!(&self.activated_backends);
 
         let backend_config_string = self
             .activated_backends
             .iter()
-            .map(|backend| match backend {
-                AvailableBackend::Github(config) => merge_tomls(toml::to_string(config), backend),
-                AvailableBackend::GoogleDrive(config) => {
-                    merge_tomls(toml::to_string(config), backend)
-                }
-            })
+            .map(|backend| merge_tomls(backend.get_toml_config(), backend))
             .fold("".to_owned(), |prev, curr| format!("{}{}", prev, curr));
 
         toml::to_string(&self.settings)
@@ -203,7 +280,7 @@ struct Store<'a> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Link<'a> {
+pub struct Link<'a> {
     link: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     category: Option<&'a str>,
