@@ -1,4 +1,4 @@
-use crate::backend::{AvailableBackend, Backend, Git, GitConfig, Github, GithubConfig};
+use crate::backend::Backend;
 use dirs::config_dir;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -14,15 +14,20 @@ pub struct MyQuery;
 struct Settings {
     config_path: PathBuf,
     config_file_name: String,
+    store_path: PathBuf,
+    store_file_name: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         let config_path = config_dir().expect("Failed to retrieve configuration directory");
+        let current_dir = env::current_dir().expect("Failed to retrieve the current directory");
 
         Self {
             config_path: config_path.join("link-keeper"),
             config_file_name: "link-keeper.toml".to_owned(),
+            store_path: current_dir,
+            store_file_name: "link_keeper.json".to_owned(),
         }
     }
 }
@@ -34,37 +39,27 @@ pub struct LinkKeeper<'a> {
     store: Store<'a>,
 }
 
-fn get_old_backends(
-    old_toml_config: &Result<toml::Value, failure::Error>,
-) -> Option<Vec<Box<dyn Backend>>> {
-    match old_toml_config {
-        Ok(ref config) => config.as_table().and_then(|table| {
-            table
-                .get("backends")
-                .and_then(|backends| backends.as_table())
-                .map(|backends| {
-                    backends
-                        .into_iter()
-                        .filter_map(|(key, value)| match AvailableBackend::from(key.as_str()) {
-                            AvailableBackend::Git => Some(Box::new(Git {
-                                config: value.clone().try_into::<GitConfig>().unwrap(),
-                            })
-                                as Box<dyn Backend>),
-                            AvailableBackend::Github => Some(Box::new(Github {
-                                config: value.clone().try_into::<GithubConfig>().unwrap(),
-                            })
-                                as Box<dyn Backend>),
-
-                            _ => None,
-                        })
-                        .collect()
-                })
-        }),
-        Err(_) => None,
-    }
-}
-
 impl<'a> LinkKeeper<'a> {
+    pub fn register_backends<F>(&mut self, get_backends: F) -> Result<(), failure::Error>
+    where
+        F: FnOnce(&toml::Value) -> Option<Vec<Box<dyn Backend>>>,
+    {
+        let default_settings = Settings::default();
+
+        let old_toml_config = Self::get_old_toml_config(
+            &default_settings
+                .config_path
+                .join(&default_settings.config_file_name),
+        )?;
+
+        let backends = get_backends(&old_toml_config);
+
+        self.activated_backends
+            .append(&mut backends.unwrap_or_else(|| vec![]));
+
+        Ok(())
+    }
+
     pub fn new() -> Self {
         let default_settings = Settings::default();
 
@@ -74,22 +69,29 @@ impl<'a> LinkKeeper<'a> {
                 .join(&default_settings.config_file_name),
         );
 
-        let old_backends = get_old_backends(&old_toml_config);
+        let old_settings = old_toml_config
+            .and_then(|config| config.try_into::<Settings>().map_err(|err| err.into()));
 
-        dbg!(&old_backends);
+        dbg!(&old_settings);
 
-        // TODO: Read from toml config before going further.
-        let store = Store::new(
-            env::current_dir().unwrap(),
-            "link_keeper.json",
-            &Format::Json,
-        );
+        let (store_path, store_file_name) = old_settings
+            .map(|settings| {
+                (
+                    settings.store_path.to_owned(),
+                    settings.store_file_name.to_owned(),
+                )
+            })
+            .unwrap_or_else(|_| {
+                (
+                    default_settings.store_path.to_owned(),
+                    default_settings.store_file_name.to_owned(),
+                )
+            });
+
+        let store = Store::new(store_path, store_file_name, &Format::Json);
 
         let link_keeper = LinkKeeper {
-            activated_backends: match old_backends {
-                Some(old_backends) => old_backends,
-                None => vec![],
-            },
+            activated_backends: vec![],
             settings: default_settings,
             store,
         };
@@ -275,7 +277,7 @@ enum Format {
 #[derive(Debug, Serialize)]
 struct Store<'a> {
     path: PathBuf,
-    file_name: &'a str,
+    file_name: String,
     format: &'a Format,
 }
 
@@ -287,7 +289,7 @@ pub struct Link<'a> {
 }
 
 impl<'a> Store<'a> {
-    fn new(path: PathBuf, file_name: &'a str, format: &'a Format) -> Self {
+    fn new(path: PathBuf, file_name: String, format: &'a Format) -> Self {
         Store {
             path,
             file_name,

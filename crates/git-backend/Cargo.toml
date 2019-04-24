@@ -1,19 +1,14 @@
 [package]
-name = "link-keeper"
+name = "link-keeper-git-backend"
 version = "0.1.0"
 authors = ["Jesper Håkansson <jesper@jesperh.se>"]
 edition = "2018"
 
 [dependencies]
-chrono = "0.4.6"
-dirs = "1.0.5"
+link-keeper = { version = "0.1.0", path = "../../" }
 toml = "0.4.10"
-serde_json = "1.0.39"
-failure = "0.1.5"
+git2 = "0.8.0"
 
 [dependencies.serde]
 version = "1.0.89"
 features = ["derive"]
-
-[workspace]
-members = ["crates/*"]
