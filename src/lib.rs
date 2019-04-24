@@ -140,7 +140,7 @@ impl<'a> LinkKeeper<'a> {
             .iter()
             .map(|backend| backend.add_link(&new_link))
             .filter(|result| result.is_err())
-            .collect::<Vec<Result<(), ()>>>();
+            .collect::<Vec<Result<(), failure::Error>>>();
 
         dbg!(errors);
 
@@ -188,6 +188,7 @@ impl<'a> LinkKeeper<'a> {
     }
 
     pub fn add_backend(&mut self, backend: Box<dyn Backend>) -> Result<(), failure::Error> {
+        backend.add(self)?;
         self.activated_backends.push(backend);
 
         self.create_toml_string()

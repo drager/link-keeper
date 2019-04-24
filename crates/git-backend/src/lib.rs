@@ -1,3 +1,4 @@
+use git2::{Repository, Signature, Tree};
 use link_keeper::{
     backend::{AccessToken, Backend},
     Link, LinkKeeper,
@@ -23,14 +24,39 @@ impl fmt::Display for Git {
 }
 
 impl Backend for Git {
-    fn add(&self, link_keeper: &mut LinkKeeper) -> Result<(), ()> {
+    fn add(&self, link_keeper: &mut LinkKeeper) -> Result<(), failure::Error> {
         dbg!("Adding Git backend");
         //link_keeper.add_backend(self);
+        Repository::init(&self.config.repository_path)?;
+
         Ok(())
     }
 
-    fn add_link(&self, link: &Link) -> Result<(), ()> {
+    fn add_link(&self, link: &Link) -> Result<(), failure::Error> {
         println!("Adding {:?} to {}", link, self);
+
+        let repo = Repository::open(&self.config.repository_path)?;
+        let comitter = Signature::now("Link keeper", "link_keeper@users.noreply.github.com")?;
+        let tree_id = repo.index()?.write_tree()?;
+
+        let parents = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .and_then(|parent| repo.find_commit(parent).ok());
+
+        let parents = parents.iter().collect::<Vec<_>>();
+
+        repo.commit(
+            Some("HEAD"),
+            &comitter,
+            &comitter,
+            &format!("Adding {:?}", link),
+            &repo.find_tree(tree_id)?,
+            parents.as_slice(),
+        )?;
+
+        // TODO: Push after commit and let it be a setting
 
         Ok(())
     }

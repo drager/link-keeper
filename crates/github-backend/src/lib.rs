@@ -22,8 +22,10 @@ pub struct GithubConfig {
 }
 
 impl Backend for Github {
-    fn add(&self, _link_keeper: &mut LinkKeeper) -> Result<(), ()> {
-        self.sign_in(&self.config.access_token)
+    fn add(&self, _link_keeper: &mut LinkKeeper) -> Result<(), failure::Error> {
+        Ok(())
+        //self.sign_in(&self.config.access_token)
+
         //.map(move |_user| link_keeper.add_backend(AvailableBackend::Github(self.config)))
     }
 
@@ -40,7 +42,7 @@ impl Backend for Github {
         Ok(())
     }
 
-    fn add_link(&self, link: &Link) -> Result<(), ()> {
+    fn add_link(&self, link: &Link) -> Result<(), failure::Error> {
         println!("Adding {:?} to {}", link, self);
         Ok(())
     }
