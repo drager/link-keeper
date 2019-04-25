@@ -144,11 +144,18 @@ fn main() -> Result<(), io::Error> {
                         .default(current_dir)
                         .show_default(false)
                         .interact()?;
+                    let push_on_add: bool = Input::new()
+                        .with_prompt(&format!(
+                            "Should link_keeper automatically push when adding a link?"
+                        ))
+                        .default(true)
+                        .interact()?;
 
                     keeper
                         .add_backend(Box::new(Git {
                             config: GitConfig {
                                 repository_path: PathBuf::from(repository_path),
+                                push_on_add,
                             },
                         }))
                         .unwrap();
