@@ -1,45 +1,40 @@
 use crate::backend::Backend;
 use dirs::config_dir;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub mod backend;
-
-pub struct MyQuery;
+pub mod file_handling;
+pub mod raw_format;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Settings {
     config_path: PathBuf,
     config_file_name: String,
-    store_path: PathBuf,
-    store_file_name: String,
+    raw_file_name: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         let config_path = config_dir().expect("Failed to retrieve configuration directory");
-        let current_dir = env::current_dir().expect("Failed to retrieve the current directory");
 
         Self {
             config_path: config_path.join("link-keeper"),
             config_file_name: "link-keeper.toml".to_owned(),
-            store_path: current_dir,
-            store_file_name: "link_keeper.json".to_owned(),
+            raw_file_name: "link_keeper.json".to_owned(),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct LinkKeeper<'a> {
+pub struct LinkKeeper {
     activated_backends: Vec<Box<dyn Backend>>,
     settings: Settings,
-    store: Store<'a>,
 }
 
-impl<'a> LinkKeeper<'a> {
+impl LinkKeeper {
     pub fn register_backends<F>(&mut self, get_backends: F) -> Result<(), failure::Error>
     where
         F: FnOnce(&toml::Value) -> Option<Vec<Box<dyn Backend>>>,
@@ -74,33 +69,16 @@ impl<'a> LinkKeeper<'a> {
 
         dbg!(&old_settings);
 
-        let (store_path, store_file_name) = old_settings
-            .map(|settings| {
-                (
-                    settings.store_path.to_owned(),
-                    settings.store_file_name.to_owned(),
-                )
-            })
-            .unwrap_or_else(|_| {
-                (
-                    default_settings.store_path.to_owned(),
-                    default_settings.store_file_name.to_owned(),
-                )
-            });
-
-        let store = Store::new(store_path, store_file_name, &Format::Json);
-
         let link_keeper = LinkKeeper {
             activated_backends: vec![],
             settings: default_settings,
-            store,
         };
 
         let full_config_path = link_keeper.full_config_path();
 
         if !Path::new(&link_keeper.settings.config_path).exists() {
             link_keeper.create_config_directory().expect(&format!(
-                "Failed to create link keeper confugration directory at: {:?}",
+                "Failed to create link keeper configuration directory at: {:?}",
                 link_keeper.settings.config_path
             ));
         }
@@ -115,19 +93,27 @@ impl<'a> LinkKeeper<'a> {
         link_keeper
     }
 
-    pub fn link_already_exists(&self, link: &str) -> Result<bool, io::Error> {
-        if self.store.file_exists() {
-            let old_contents = self.store.read_data_from_file()?;
+    pub fn get_raw_file_name(&self) -> &String {
+        &self.settings.raw_file_name
+    }
 
-            Ok(self.contains_link(&link, &old_contents))
-        } else {
-            Ok(false)
-        }
+    pub fn link_already_exists(&self, link: &str) -> Result<bool, io::Error> {
+        Ok(false)
+        /*if self.store.file_exists() {*/
+        //let old_contents = self.store.read_data_from_file()?;
+
+        //Ok(self.contains_link(&link, &old_contents))
+        //} else {
+        //Ok(false)
+        /*}*/
     }
 
     // TODO: Should probably use failure and return Result<(), OwnError> instead
-    pub fn add(&self, link: &'a str, category: Option<&'a str>) -> Result<(), io::Error> {
-        let new_link = Link { link, category };
+    pub fn add<'a>(&self, link: &'a str, category: Option<&'a str>) -> Result<(), failure::Error> {
+        let new_link = Link {
+            url: link.to_owned(),
+            category: category.map(|cat| cat.to_owned()),
+        };
 
         println!("Adding link to backends...");
 
@@ -138,46 +124,13 @@ impl<'a> LinkKeeper<'a> {
         let errors = self
             .activated_backends
             .iter()
-            .map(|backend| backend.add_link(&new_link))
+            .map(|backend| backend.add_link(&new_link, &self))
             .filter(|result| result.is_err())
             .collect::<Vec<Result<(), failure::Error>>>();
 
         dbg!(errors);
 
-        // Always add to raw!
-        self.add_to_raw(new_link)?;
-
         Ok(())
-    }
-
-    fn add_to_raw(&self, new_link: Link) -> Result<(), io::Error> {
-        self.store.create_file()?;
-
-        let formatted_data = self.store.format_data(&vec![new_link])?;
-
-        let formatted_data = if self.store.file_is_empty()? {
-            formatted_data
-        } else {
-            let old_contents = self.store.read_data_from_file()?;
-
-            let mut old_contents_as_orginal = self.store.to_orginal_format(&old_contents)?;
-
-            old_contents_as_orginal.append(&mut self.store.to_orginal_format(&formatted_data)?);
-
-            self.store.format_data(&old_contents_as_orginal)?
-        };
-
-        self.store.write_to_file(formatted_data.as_bytes())?;
-
-        Ok(())
-    }
-
-    pub fn get_available_backends(&self) -> Vec<String> {
-        vec![
-            "Git".to_owned(),
-            "Github".to_owned(),
-            "GoogleDrive".to_owned(),
-        ]
     }
 
     /// Get all the activated backends
@@ -269,102 +222,23 @@ impl<'a> LinkKeeper<'a> {
     }
 }
 
-#[derive(Debug, Serialize)]
-enum Format {
-    Json,
-    Markdown,
-}
-
-#[derive(Debug, Serialize)]
-struct Store<'a> {
-    path: PathBuf,
-    file_name: String,
-    format: &'a Format,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Link<'a> {
-    link: &'a str,
+pub struct Link {
+    url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    category: Option<&'a str>,
+    category: Option<String>,
 }
 
-impl<'a> Store<'a> {
-    fn new(path: PathBuf, file_name: String, format: &'a Format) -> Self {
-        Store {
-            path,
-            file_name,
-            format,
-        }
+impl Link {
+    pub fn new(url: String, category: Option<String>) -> Self {
+        Link { url, category }
     }
 
-    fn format_data(&self, links: &'a Vec<Link>) -> Result<String, serde_json::error::Error> {
-        let formatted = match self.format {
-            Format::Json => serde_json::to_string(links)?,
-            Format::Markdown => "".to_owned(),
-        };
-
-        Ok(formatted)
+    pub fn get_url(&self) -> String {
+        self.url.to_owned()
     }
 
-    fn to_orginal_format(&self, contents: &'a str) -> Result<Vec<Link>, serde_json::error::Error> {
-        let formatted = match self.format {
-            Format::Json => serde_json::from_str::<_>(contents)?,
-            Format::Markdown => unimplemented!(),
-        };
-
-        Ok(formatted)
-    }
-
-    fn file_exists(&self) -> bool {
-        let full_path = self.joined();
-
-        full_path.exists()
-    }
-
-    fn create_file(&self) -> Result<(), io::Error> {
-        if !self.file_exists() {
-            // TODO: Real logging
-            dbg!("Creating file...");
-            fs::File::create(self.joined())?;
-        }
-
-        Ok(())
-    }
-
-    fn joined(&self) -> PathBuf {
-        self.path.join(&self.file_name)
-    }
-
-    fn read_data_from_file(&self) -> Result<String, io::Error> {
-        let full_path = self.joined();
-        let mut file = OpenOptions::new().read(true).open(full_path)?;
-
-        let mut buffer = String::new();
-        file.read_to_string(&mut buffer)?;
-
-        Ok(buffer)
-    }
-
-    fn write_to_file(&self, contents: &[u8]) -> Result<(), io::Error> {
-        let full_path = self.joined();
-
-        // TODO: Improvement, use .append(true) instead of write.
-        let mut file = OpenOptions::new().write(true).open(full_path)?;
-
-        file.write_all(contents)?;
-
-        Ok(())
-    }
-
-    fn file_is_empty(&self) -> Result<bool, io::Error> {
-        let full_path = self.joined();
-
-        let mut file = File::open(full_path)?;
-
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-
-        Ok(contents.is_empty())
+    pub fn get_category(&self) -> Option<String> {
+        self.category.to_owned()
     }
 }

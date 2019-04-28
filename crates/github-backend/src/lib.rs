@@ -42,7 +42,7 @@ impl Backend for Github {
         Ok(())
     }
 
-    fn add_link(&self, link: &Link) -> Result<(), failure::Error> {
+    fn add_link(&self, link: &Link, _link_keeper: &LinkKeeper) -> Result<(), failure::Error> {
         println!("Adding {:?} to {}", link, self);
         Ok(())
     }

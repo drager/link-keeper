@@ -76,10 +76,12 @@ const PKG_NAME: Option<&'static str> = option_env!("CARGO_PKG_NAME");
 fn main() -> Result<(), io::Error> {
     let add_command = "add";
     let add_link_command = "link";
+    let category_link_command = "category";
     let backend_command = "backend";
     let backend_add_command = "add";
 
     // TODO: Add configure subcommand
+    // It should also be run automatically if no config file is found
     let mut keeper = LinkKeeper::new();
 
     keeper.register_backends(&get_old_backends).unwrap();
@@ -103,6 +105,13 @@ fn main() -> Result<(), io::Error> {
                         .help("The link to be stored. For example: https://github.com/drager/link-keeper")
                         .required(true),
                 )
+                .arg(
+                    Arg::with_name(category_link_command)
+                        .short("c")
+                        .long(category_link_command)
+                        .takes_value(true)
+                        .help("Attach a category to your link"),
+                )
                 .about("Store a link at the given backend"),
         )
         .get_matches();
@@ -110,7 +119,8 @@ fn main() -> Result<(), io::Error> {
     if let Some(backend_matches) = matches.subcommand_matches(backend_command) {
         if let Some(_backend_add_matches) = backend_matches.subcommand_matches(backend_add_command)
         {
-            let available_backends = keeper.get_available_backends();
+            // TODO: Filter away already added backends.
+            let available_backends = [AvailableBackend::Git, AvailableBackend::Github];
             let selected_backend = AvailableBackend::from(
                 Select::new()
                     .with_prompt("Choose to add one of the following backends")
@@ -144,17 +154,32 @@ fn main() -> Result<(), io::Error> {
                         .default(current_dir)
                         .show_default(false)
                         .interact()?;
+
+                    let default_file_name = "README.md".to_owned();
+
+                    let file_name: String = Input::new()
+                        .with_prompt(&format!(
+                            "... and what name would you like the file to have? (default: {:?})",
+                            default_file_name
+                        ))
+                        .default(default_file_name)
+                        .show_default(false)
+                        .interact()?;
+
                     let push_on_add: bool = Input::new()
                         .with_prompt(&format!(
-                            "Should link_keeper automatically push when adding a link?"
+                            "Should link keeper automatically push when adding a link? (default: {:?})",
+                            true
                         ))
                         .default(true)
+                        .show_default(false)
                         .interact()?;
 
                     keeper
                         .add_backend(Box::new(Git {
                             config: GitConfig {
                                 repository_path: PathBuf::from(repository_path),
+                                file_name,
                                 push_on_add,
                             },
                         }))
@@ -167,6 +192,8 @@ fn main() -> Result<(), io::Error> {
     let _ = matches
         .subcommand_matches(add_command)
         .and_then(|add_matches| {
+            let category = add_matches.value_of(category_link_command);
+
             add_matches.value_of(add_link_command).map(|new_link| {
                 if keeper.get_activated_backends().is_empty() {
                     eprintln!(
@@ -189,10 +216,10 @@ fn main() -> Result<(), io::Error> {
                         .interact()
                         .unwrap()
                     {
-                        keeper.add(new_link, None).unwrap();
+                        keeper.add(new_link, category).unwrap();
                     }
                 } else {
-                    keeper.add(new_link, None).unwrap();
+                    keeper.add(new_link, category).unwrap();
                 }
             })
         });

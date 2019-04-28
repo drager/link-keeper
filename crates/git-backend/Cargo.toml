@@ -9,6 +9,7 @@ link-keeper = { version = "0.1.0", path = "../../" }
 toml = "0.4.10"
 git2 = "0.8.0"
 failure = "0.1.5"
+markdown = "0.2.0"
 
 [dependencies.serde]
 version = "1.0.89"

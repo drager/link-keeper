@@ -18,7 +18,7 @@ pub trait Backend: fmt::Debug + fmt::Display {
     fn add(&self, link_keeper: &mut LinkKeeper) -> Result<(), failure::Error>;
     fn sign_in(&self, access_token: &AccessToken) -> Result<(), ()>;
     fn sign_out(&self, access_token: &AccessToken) -> Result<(), ()>;
-    fn add_link(&self, link: &Link) -> Result<(), failure::Error>;
+    fn add_link(&self, link: &Link, link_keeper: &LinkKeeper) -> Result<(), failure::Error>;
     fn get_toml_config(&self) -> Result<String, toml::ser::Error>;
     //fn send(&self, data: &Data) -> Result<Response, ()>;
     //fn get();
